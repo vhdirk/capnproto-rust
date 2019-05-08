@@ -84,11 +84,11 @@ impl <T, E> Future for Promise<T, E>  where T: Unpin, E: Unpin
 }
 
 #[cfg(feature = "rpc_try")]
-impl<T> Try for Promise<T, crate::Error> {
+impl<T> Try for Promise<T, crate::Error> where T: Unpin {
     type Ok = T;
     type Error = crate::Error;
 
-    fn into_result(mut self) -> Result<Self::Ok, Self::Error> {
+    fn into_result(self) -> Result<Self::Ok, Self::Error> {
         unimplemented!();
     }
 
