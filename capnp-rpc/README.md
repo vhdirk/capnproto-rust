@@ -56,7 +56,7 @@ code calls the `Bar.baz()` method:
 
 ```rust
 fn call_bar(client: ::foo_capnp::bar::Client)
-   -> Box<Future<Item=i32, Error=::capnp::Error>>
+   -> Box<Future<Output=Result<i32, capnp::Error>>>
 {
     let mut req = client.baz_request();
     req.get().set_x(11);

@@ -22,6 +22,7 @@
 //! [standard stream framing](https://capnproto.org/encoding.html#serialization-over-a-stream).
 
 use std::io::{self};
+use std::pin::Pin;
 
 use capnp::{message, Error, Result, Word, OutputSegments};
 
@@ -29,7 +30,8 @@ use byteorder::{ByteOrder, LittleEndian};
 use futures::future::Future;
 use futures::sink::Sink;
 use futures::stream::Stream;
-use futures::{Async, AsyncSink, Poll, StartSend};
+use futures::task::Context;
+use futures::Poll;
 
 pub struct OwnedSegments {
     segment_slices: Vec<(usize, usize)>,
@@ -146,7 +148,7 @@ impl InnerReadState {
     }
 
     fn read_helper<R>(&mut self, read: &mut R, options: &message::ReaderOptions)
-                      -> Result<Async<Option<(Vec<Word>, Vec<(usize, usize)>)>>>
+                      -> Poll<Result<Option<(Vec<Word>, Vec<(usize, usize)>)>>>
         where R: ::std::io::Read
     {
         loop {
@@ -155,12 +157,12 @@ impl InnerReadState {
                     let n = match async_read_all(read, &mut buf[*idx..]) {
                         Ok(n) => n,
                         Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof =>
-                            return Ok(Async::Ready(None)),
-                        Err(e) => return Err(e.into()),
+                            return Poll::Ready(Ok(None)),
+                        Err(e) => return Poll::Ready(Err(e.into())),
                     };
                     *idx += n;
                     if *idx < buf.len() {
-                        return Ok(Async::NotReady)
+                        return Poll::Pending
                     } else {
                         let (segment_count, first_segment_length) = parse_segment_table_first(buf)?;
                         if segment_count == 1 {
@@ -188,7 +190,7 @@ impl InnerReadState {
                 } => {
                     *idx += async_read_all(read, &mut segment_size_buf[*idx..])?;
                     if *idx < segment_size_buf.len() {
-                        return Ok(Async::NotReady)
+                        return Poll::Pending
                     } else {
                         let (word_count, segment_slices) =
                             parse_segment_table_rest(
@@ -208,11 +210,11 @@ impl InnerReadState {
                         bytes.len()
                     };
                     if *idx < len {
-                        return Ok(Async::NotReady)
+                        return Poll::Pending
                     } else {
                         let words = ::std::mem::replace(owned_space, Vec::new());
                         let slices = ::std::mem::replace(segment_slices, Vec::new());
-                        return Ok(Async::Ready(Some((words, slices))))
+                        return Poll::Ready(Ok(Some((words, slices))))
                     }
                 }
             };
@@ -223,12 +225,12 @@ impl InnerReadState {
 }
 
 impl <R> Read<R> where R: ::std::io::Read {
-    /// Drives progress on an in-progress read. Returns `Async::NotReady` when the
+    /// Drives progress on an in-progress read. Returns `Poll::Pending` when the
     /// underyling reader returns `ErrorKind::WouldBlock`.
-    fn poll(&mut self) -> Result<Async<(R, Option<message::Reader<OwnedSegments>>)>> {
+    fn poll(self: Pin<&mut Self>) -> Poll<Result<(R, Option<message::Reader<OwnedSegments>>)>> {
         let result = match &mut self.state {
             &mut ReadState::Empty => {
-                return Err(Error::failed("tried to read empty ReadState".to_string()))
+                return Poll::Ready(Err(Error::failed("tried to read empty ReadState".to_string())))
             }
             &mut ReadState::Reading { ref mut read, ref options, ref mut inner } => {
                 try_ready!(inner.read_helper(read, options))
@@ -239,7 +241,7 @@ impl <R> Read<R> where R: ::std::io::Read {
         match old_self {
             ReadState::Empty => unreachable!(),
             ReadState::Reading { read, options, ..} => {
-                return Ok(Async::Ready((
+                return Poll::Ready(Ok((
                     read,
                     result.map(|(words, slices)| {
                         message::Reader::new(
@@ -253,10 +255,10 @@ impl <R> Read<R> where R: ::std::io::Read {
     }
 }
 
-impl <R> Future for Read<R> where R: ::std::io::Read {
-    type Item = (R, Option<message::Reader<OwnedSegments>>);
-    type Error = Error;
-    fn poll(&mut self) -> Poll<Self::Item, Error> {
+impl <R> Future for Read<R> 
+  where R: ::std::io::Read + std::marker::Unpin {
+    type Output = Result<(R, Option<message::Reader<OwnedSegments>>)>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         Read::poll(self)
     }
 }
@@ -374,7 +376,7 @@ impl InnerWriteState {
     }
 
     fn write_helper<W, M>(&mut self, writer: &mut W, message: &mut M)
-                          -> io::Result<Async<()>>
+                          -> Poll<io::Result<()>>
         where W: ::std::io::Write, M: AsOutputSegments,
     {
         loop {
@@ -382,7 +384,7 @@ impl InnerWriteState {
                 InnerWriteState::OneWordSegmentTable { ref mut buf, ref mut idx } => {
                     *idx += async_write_all(writer, &buf[*idx..])?;
                     if *idx < 8 {
-                        return Ok(Async::NotReady)
+                        return Poll::Pending
                     } else {
                         InnerWriteState::Segments { segment_idx: 0, idx: 0 }
                     }
@@ -390,7 +392,7 @@ impl InnerWriteState {
                 InnerWriteState::MoreThanOneWordSegmentTable { ref mut buf, ref mut idx } => {
                     *idx += async_write_all(writer, &buf[*idx..])?;
                     if *idx < buf.len() {
-                        return Ok(Async::NotReady)
+                        return Poll::Pending
                     } else {
                         InnerWriteState::Segments { segment_idx: 0, idx: 0 }
                     }
@@ -402,7 +404,7 @@ impl InnerWriteState {
                         let buf = Word::words_to_bytes(segment);
                         *idx += async_write_all(writer, &buf[*idx..])?;
                         if *idx < buf.len() {
-                            return Ok(Async::NotReady)
+                            return Poll::Pending
                         } else {
                             *segment_idx += 1;
                             *idx = 0;
@@ -414,16 +416,16 @@ impl InnerWriteState {
                 InnerWriteState::Flush => {
                     match writer.flush(){
                         Ok(_) => {
-                            return Ok(Async::Ready(()));
+                            return Poll::Ready(Ok(()));
                         },
                         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                            return Ok(Async::NotReady);
+                            return Poll::Pending;
                         }
                         Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {
                             InnerWriteState::Flush
                         }
                         Err(e) => {
-                            return Err(e);
+                            return Poll::Ready(Err(e));
                         }
                     }
                 }
@@ -434,10 +436,12 @@ impl InnerWriteState {
     }
 }
 
-impl <W, M> Future for Write<W, M> where W: ::std::io::Write, M: AsOutputSegments {
-    type Item = (W, M);
-    type Error = Error;
-    fn poll(&mut self) -> Poll<(W, M), Error> {
+impl <W, M> Future for Write<W, M>
+  where W: ::std::io::Write, M: AsOutputSegments,
+        M: std::marker::Unpin
+{
+    type Output = Result<(W, M)>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         Write::poll(self)
     }
 }
@@ -480,13 +484,13 @@ pub fn write_message<W, M>(writer: W, message: M) -> Write<W, M>
 }
 
 impl <W, M> Write<W, M> where W: ::std::io::Write, M: AsOutputSegments {
-    /// Drives progress on an in-progress write. Returns `Async::NotReady` when the
+    /// Drives progress on an in-progress write. Returns `Poll::Pending` when the
     /// underyling writer returns `ErrorKind::WouldBlock`.
-    fn poll(&mut self) -> Result<Async<(W, M)>>
+    fn poll(self: Pin<&mut Self>) -> Poll<Result<(W, M)>>
     {
         match self.state {
             WriteState::Empty => {
-                return Err(Error::failed("tried to poll empty Write".to_string()))
+                return Poll::Ready(Err(Error::failed("tried to poll empty Write".to_string())))
             }
             WriteState::Writing { ref mut writer, ref mut message, ref mut inner } => {
                 try_ready!(inner.write_helper(writer, message));
@@ -497,7 +501,7 @@ impl <W, M> Write<W, M> where W: ::std::io::Write, M: AsOutputSegments {
         match old_self {
             WriteState::Empty => unreachable!(),
             WriteState::Writing { writer, message, ..} => {
-                Ok(Async::Ready((writer, message)))
+                Poll::Ready(Ok((writer, message)))
             }
         }
     }
@@ -523,35 +527,33 @@ impl <S, M> Transport<S, M> {
 
 impl <S, M> Stream for Transport<S, M> where S: io::Read {
     type Item = message::Reader<OwnedSegments>;
-    type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Error> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         match try_ready!(self.read_state.read_helper(&mut self.stream, &self.read_options)) {
             Some((words, slices))=> {
                 self.read_state = InnerReadState::new();
-                Ok(Async::Ready(Some(message::Reader::new(
+                Poll::Ready(Some(message::Reader::new(
                     OwnedSegments {
                         segment_slices: slices,
                         owned_space: words,
                     },
                     self.read_options
-                ))))
+                )))
             }
-            None => Ok(Async::Ready(None)),
+            None => Poll::Ready(None),
         }
     }
 }
 
-impl <S, M> Sink for Transport<S, M> where S: io::Write, M: AsOutputSegments {
-    type SinkItem = M;
+impl <S, M> Sink<M> for Transport<S, M> where S: io::Write, M: AsOutputSegments {
     type SinkError = Error;
 
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+    fn start_send(self: Pin<&mut Self>, item: M) -> Result<M> {
         match self.write_state {
             Some((ref mut m, ref mut state)) => {
                 match state.write_helper(&mut self.stream, m)? {
-                    Async::NotReady => return Ok(AsyncSink::NotReady(item)),
-                    Async::Ready(()) => (),
+                    Poll::Pending => return Ok(AsyncSink::NotReady(item)),
+                    Poll::Ready(()) => (),
                 }
             }
             None => (),
@@ -561,17 +563,17 @@ impl <S, M> Sink for Transport<S, M> where S: io::Write, M: AsOutputSegments {
         Ok(AsyncSink::Ready)
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+    fn poll_complete(&mut self) -> Poll<Result<()>> {
         let new_state = match self.write_state {
             Some((ref mut m, ref mut state)) => {
                 try_ready!(state.write_helper(&mut self.stream, m));
                 None
             }
-            None => return Ok(Async::Ready(())),
+            None => return Poll::Ready(Ok(())),
         };
 
         self.write_state = new_state;
-        Ok(Async::Ready(()))
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -845,12 +847,12 @@ pub mod test {
                 let mut state = write_message(writer, segments);
 
                 let mut result = state.poll().unwrap();
-                while let Async::NotReady = result {
+                while let Poll::Pending = result {
                     result = state.poll().unwrap();
                 }
 
                 match result {
-                    Async::NotReady => unreachable!(),
+                    Poll::Pending => unreachable!(),
                     Async::Ready((writer, m)) => {
                         let mut cursor = writer.into_writer();
                         cursor.set_position(0);
@@ -862,7 +864,7 @@ pub mod test {
             let message = {
                 let mut state = read_message(&mut read, Default::default());
                 let mut result = state.poll().unwrap();
-                while let Async::NotReady = result {
+                while let Poll::Pending = result {
                     result = state.poll().unwrap();
                 }
                 match result {

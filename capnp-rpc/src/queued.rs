@@ -110,7 +110,7 @@ impl Pipeline {
     }
 
     pub fn drive<F>(&mut self, promise: F)
-        where F: Future<Item=(), Error=Error> + 'static
+        where F: Future<Output=Result<(), Error>> + 'static
     {
         let new = ForkedPromise::new(
             Promise::from_future(self.inner.borrow_mut().promise_to_drive.clone().join(promise).map(|_|())));
@@ -213,7 +213,7 @@ impl Client {
     }
 
     pub fn drive<F>(&mut self, promise: F)
-        where F: Future<Item=(), Error=Error> + 'static
+        where F: Future<Output=Result<(), Error>> + 'static
     {
         assert!(self.inner.borrow().promise_to_drive.is_none());
         self.inner.borrow_mut().promise_to_drive = Some(ForkedPromise::new(Promise::from_future(promise)));

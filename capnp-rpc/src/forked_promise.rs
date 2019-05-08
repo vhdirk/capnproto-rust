@@ -18,7 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use futures::{executor, task, Async, Future};
+use futures::{executor, task, Future};
 use futures::executor::Notify;
 
 use std::cell::{Cell, RefCell};
@@ -190,7 +190,7 @@ mod test {
             drop(slot2.borrow_mut().take().unwrap());
             Ok::<_, ()>(1.into())
         }));
-        let future2 = Box::new(future.clone()) as Box<Future<Item=_, Error=_>>;
+        let future2 = Box::new(future.clone()) as Box<Future<Output=Result<_, _>>>;
         *slot.borrow_mut() = Some(future2);
         assert_eq!(future.wait().unwrap(), 1);
     }
@@ -266,8 +266,8 @@ mod test {
         let f2 = f1.clone();
 
         let (mut mfh, mf) = ModedFuture::new(
-            Box::new(f1.map_err(|_| ())) as Box<Future<Item=u32, Error=()>>,
-            Box::new(::futures::future::empty()) as Box<Future<Item=u32, Error=()>>,
+            Box::new(f1.map_err(|_| ())) as Box<Future<Output=Result<u32, ()>>>,
+            Box::new(::futures::future::empty()) as Box<Future<Output=Result<u32, Error=()>>>,
             Mode::Left);
 
 
@@ -329,7 +329,7 @@ mod test {
         use futures::{Stream, future, task};
 
         let mut core = local_executor::Core::new();
-        let (tx0, rx0) = mpsc::unbounded::<Box<Future<Item=(),Error=()>>>();
+        let (tx0, rx0) = mpsc::unbounded::<Box<Future<Output=Result<(), ()>>>>();
         let run_stream = rx0.for_each(|f| f);
 
         let (tx1, rx1) = oneshot::channel::<()>();
@@ -380,7 +380,7 @@ mod test {
         pub struct Core {
             unpark_send: mpsc::Sender<u64>,
             unpark: mpsc::Receiver<u64>,
-            live: HashMap<u64, Spawn<Box<Future<Item=(), Error=()>>>>,
+            live: HashMap<u64, Spawn<Box<Future<Output=Result<(), ()>>>>>,
             next_id: u64,
         }
 
@@ -398,7 +398,7 @@ mod test {
 
             /// Spawn a future to be executed by a future call to `run`.
             pub fn spawn<F>(&mut self, f: F)
-                where F: Future<Item=(), Error=()> + 'static
+                where F: Future<Output=Result<(), ()>> + 'static
             {
                 self.live.insert(self.next_id, executor::spawn(Box::new(f)));
                 self.unpark_send.send(self.next_id).unwrap();

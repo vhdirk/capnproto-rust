@@ -19,9 +19,11 @@
 // THE SOFTWARE.
 
 use std::io;
+use std::pin::Pin;
 use futures::future::Future;
 use futures::stream::Stream;
-use futures::{Async, Poll};
+use futures::task::Context;
+use futures::Poll;
 
 use capnp::{Error, message};
 
@@ -40,13 +42,13 @@ impl <R> ReadStream<R> where R: io::Read {
     }
 }
 
-impl <R> Stream for ReadStream<R> where R: io::Read {
+impl <R> Stream for ReadStream<R> 
+  where R: io::Read + std::marker::Unpin{
     type Item = message::Reader<::serialize::OwnedSegments>;
-    type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Error> {
-        let (r, m) = try_ready!(Future::poll(&mut self.read));
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        let (r, m) = try_ready!(Future::poll(Pin::new(&mut self.read), cx));
         self.read = ::serialize::read_message(r, self.options);
-        Ok(Async::Ready(m))
+        Poll::Ready(m)
     }
 }

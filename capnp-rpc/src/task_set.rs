@@ -18,7 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use futures::{Async, Future, Stream};
+use futures::{Future, Stream};
 use futures::stream::FuturesUnordered;
 use futures::unsync::mpsc;
 
@@ -26,12 +26,12 @@ use std::cell::{RefCell};
 use std::rc::Rc;
 
 enum EnqueuedTask<T,E> {
-    Task(Box<Future<Item=T, Error=E>>),
+    Task(Box<Future<Output=Result<T, E>>>),
     Terminate(Result<(), E>),
 }
 
 enum TaskInProgress<E> {
-    Task(Box<Future<Item=(), Error=()>>),
+    Task(Box<Future<Output=Result<(), ()>>>),
     Terminate(Option<Result<(), E>>),
 }
 
@@ -99,7 +99,7 @@ pub struct TaskSetHandle<T, E> {
 
 impl <T, E> TaskSetHandle<T, E> where T: 'static, E: 'static {
     pub fn add<F>(&mut self, f: F)
-        where F: Future<Item=T, Error=E> + 'static
+        where F: Future<Output=Result<T, E>> + 'static
     {
         let _ = self.sender.unbounded_send(EnqueuedTask::Task(Box::new(f)));
     }

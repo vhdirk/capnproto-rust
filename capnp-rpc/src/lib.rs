@@ -322,7 +322,7 @@ impl ServerHook for Server {
 // TODO: figure out a better way to allow construction of promise clients.
 pub fn new_promise_client<T, F>(client_promise: F) -> T
     where T: ::capnp::capability::FromClientHook,
-          F: ::futures::Future<Item=::capnp::capability::Client,Error=Error>,
+          F: ::futures::Future<Output=Result<::capnp::capability::Client, Error>>,
           F: 'static
 {
     let mut queued_client = ::queued::Client::new(None);
