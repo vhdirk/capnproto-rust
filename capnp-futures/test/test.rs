@@ -22,7 +22,6 @@
 extern crate capnp;
 extern crate capnp_futures;
 extern crate futures;
-extern crate romio;
 
 pub mod addressbook_capnp {
   include!(concat!(env!("OUT_DIR"), "/addressbook_capnp.rs"));
@@ -87,7 +86,7 @@ mod tests {
         use std::cell::Cell;
         use std::rc::Rc;
 
-        let (s1, s2) = romio::uds::UnixStream::pair().expect("socket pair");
+        let (s1, s2) = async_std::os::unix::net::UnixStream::pair().expect("socket pair");
 
         let (mut sender, write_queue) = capnp_futures::write_queue(s1);
 
@@ -133,7 +132,7 @@ mod tests {
             read_address_book(address_book.reborrow_as_reader());
         }
 
-        let (stream0, stream1) = romio::uds::UnixStream::pair().expect("socket pair");
+        let (stream0, stream1) = async_std::os::unix::net::UnixStream::pair().expect("socket pair");
 
         let f0 = serialize::write_message(stream0, message).map_err(|e| panic!("write error {:?}", e)).map(|_|());
         let f1 =

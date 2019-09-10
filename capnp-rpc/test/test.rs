@@ -27,7 +27,6 @@ extern crate capnp;
 extern crate capnp_rpc;
 
 extern crate futures;
-extern crate romio;
 
 use capnp::Error;
 use capnp::capability::Promise;
@@ -53,7 +52,7 @@ fn canceled_to_error(_e: futures::channel::oneshot::Canceled) -> Error {
 
 #[test]
 fn drop_rpc_system() {
-    let (instream, _outstream) = romio::uds::UnixStream::pair().expect("socket pair");
+    let (instream, _outstream) = async_std::os::unix::net::UnixStream::pair().expect("socket pair");
     let (reader, writer) = instream.split();
 
     let network =
@@ -67,7 +66,7 @@ fn drop_rpc_system() {
 }
 
 fn disconnector_setup() -> ( RpcSystem<capnp_rpc::rpc_twoparty_capnp::Side>, RpcSystem<capnp_rpc::rpc_twoparty_capnp::Side> ) {
-    let (client_stream, server_stream) = romio::uds::UnixStream::pair().expect("socket pair");
+    let (client_stream, server_stream) = async_std::os::unix::net::UnixStream::pair().expect("socket pair");
     let (client_reader, client_writer) = client_stream.split();
 
     let client_network =
@@ -171,7 +170,7 @@ fn rpc_top_level<F>(main: F)
     where F: FnOnce(futures::executor::LocalPool, test_capnp::bootstrap::Client) -> Result<(), Error>,
           F: Send + 'static
 {
-    let (client_stream, server_stream) = romio::uds::UnixStream::pair().expect("socket pair");
+    let (client_stream, server_stream) = async_std::os::unix::net::UnixStream::pair().expect("socket pair");
 
     let join_handle = ::std::thread::spawn(move || {
         let (server_reader, server_writer) = server_stream.split();
